@@ -338,14 +338,26 @@ def demo(args):
 
         # Generate camera trajectory using the new utility function
         try:
-            generated_w2cs, generated_intrinsics = generate_camera_trajectory(
-                trajectory_type=args.trajectory,
+            from cosmos_predict1.diffusion.inference.camera_utils import generate_composite_trajectory, TrajectorySegment
+            # generated_w2cs, generated_intrinsics = generate_camera_trajectory(
+            #     trajectory_type=args.trajectory,
+            #     initial_w2c=initial_cam_w2c_for_traj,
+            #     initial_intrinsics=initial_cam_intrinsics_for_traj,
+            #     num_frames=args.num_video_frames,
+            #     movement_distance=args.movement_distance,
+            #     camera_rotation=args.camera_rotation,
+            #     center_depth=1.0,
+            #     device=device.type,
+            # )
+
+            segments = [
+                TrajectorySegment("left",  num_frames=16, movement_distance=0.3, camera_rotation="center_facing"),
+                TrajectorySegment("right", num_frames=16, movement_distance=0.3, camera_rotation="center_facing"),
+            ]
+            generated_w2cs, generated_intrinsics = generate_composite_trajectory(
+                segments=segments,
                 initial_w2c=initial_cam_w2c_for_traj,
                 initial_intrinsics=initial_cam_intrinsics_for_traj,
-                num_frames=args.num_video_frames,
-                movement_distance=args.movement_distance,
-                camera_rotation=args.camera_rotation,
-                center_depth=1.0,
                 device=device.type,
             )
         except (ValueError, NotImplementedError) as e:

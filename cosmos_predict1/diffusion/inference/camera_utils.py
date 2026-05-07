@@ -17,6 +17,8 @@ import torch
 import math
 import torch.nn.functional as F
 from .forward_warp_utils_pytorch import unproject_points
+from typing import List, Tuple
+from dataclasses import dataclass
 
 def apply_transformation(Bx4x4, another_matrix):
     B = Bx4x4.shape[0]
@@ -44,6 +46,75 @@ def look_at_matrix(camera_pos, target, invert_pos=True):
     look_at[:3, 3] = (-camera_pos) if invert_pos else camera_pos
 
     return look_at
+
+@dataclass
+class TrajectorySegment:
+    """单段轨迹的配置"""
+    trajectory_type: str          # "left", "right", "up", "down", "zoom_in", "zoom_out", "clockwise", "counterclockwise"
+    num_frames: int               # 这一段多少帧
+    movement_distance: float      # 这一段移动多远
+    camera_rotation: str = "center_facing"   # "center_facing", "no_rotation", "trajectory_aligned"
+    center_depth: float = 1.0
+
+def generate_composite_trajectory(
+    segments: List[TrajectorySegment],
+    initial_w2c: torch.Tensor,        # (4, 4)
+    initial_intrinsics: torch.Tensor,  # (3, 3)
+    device: str = "cuda",
+    skip_duplicate_frame: bool = True, # 是否去掉段与段之间重复的关键帧
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """
+    将多段轨迹拼接成复杂路径。
+    例如：先 left 10帧，再 right 10帧，形成"往左再回右"的往返。
+    
+    Returns:
+        generated_w2cs: (1, total_frames, 4, 4)
+        generated_intrinsics: (1, total_frames, 3, 3)
+    """
+    if not segments:
+        raise ValueError("segments list cannot be empty")
+
+    w2c_chunks = []
+    intrinsic_chunks = []
+    
+    # 当前状态，会随着每一段结束而更新
+    current_w2c = initial_w2c
+    current_intrinsics = initial_intrinsics
+
+    for i, seg in enumerate(segments):
+        # 生成单段轨迹
+        seg_w2cs, seg_intrinsics = generate_camera_trajectory(
+            trajectory_type=seg.trajectory_type,
+            initial_w2c=current_w2c,
+            initial_intrinsics=current_intrinsics,
+            num_frames=seg.num_frames,
+            movement_distance=seg.movement_distance,
+            camera_rotation=seg.camera_rotation,
+            center_depth=seg.center_depth,
+            device=device,
+        )
+        # seg_w2cs: (1, num_frames, 4, 4)
+        seg_w2cs = seg_w2cs.squeeze(0)           # (num_frames, 4, 4)
+        seg_intrinsics = seg_intrinsics.squeeze(0)  # (num_frames, 3, 3)
+
+        # 避免重复：第 i 段的第 0 帧等于第 i-1 段的最后一帧，所以后续段可以去掉第 0 帧
+        if i > 0 and skip_duplicate_frame and seg_w2cs.shape[0] > 1:
+            seg_w2cs = seg_w2cs[1:]
+            seg_intrinsics = seg_intrinsics[1:]
+
+        w2c_chunks.append(seg_w2cs)
+        intrinsic_chunks.append(seg_intrinsics)
+
+        # 更新"当前姿态"为下一段的起点
+        current_w2c = seg_w2cs[-1]
+        current_intrinsics = seg_intrinsics[-1]
+
+    # 拼接所有段
+    final_w2cs = torch.cat(w2c_chunks, dim=0).unsqueeze(0)      # (1, T, 4, 4)
+    final_intrinsics = torch.cat(intrinsic_chunks, dim=0).unsqueeze(0)  # (1, T, 3, 3)
+    
+    return final_w2cs, final_intrinsics
+
 
 def create_horizontal_trajectory(
     world_to_camera_matrix, center_depth, positive=True, n_steps=13, distance=0.1, device="cuda", axis="x", camera_rotation="center_facing"
